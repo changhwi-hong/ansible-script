@@ -1,0 +1,121 @@
+- hosts: masters, workers
+  become: true
+  tasks:
+    - name : Create containerd config file
+      ansible.builtin.file:
+        path: "/etc/modules-load.d/k8s.conf"
+        state: "touch" 
+    
+    - name: Add conf for containerd
+      ansible.builtin.blockinfile:
+        path: "/etc/modules-load.d/k8s.conf"
+        block: |
+          overlay
+          br_netfilter
+
+    - name: modprobe
+      ansible.builtin.shell: |
+        modprobe overlay
+        modprobe br_netfilter
+    
+    - name : Set system configurations for Kubernetes networking
+      ansible.builtin.file:
+        path: "/etc/sysctl.d/k8s.conf"
+        state: "touch"
+
+    - name: Add conf for containerd
+      ansible.builtin.blockinfile:
+        path: "/etc/sysctl.d/k8s.conf"
+        block: |
+          net.bridge.bridge-nf-call-iptables  = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward                 = 1          
+
+    - name: Apply new settings
+      ansible.builtin.shell: sysctl --system
+
+    - name: Disable swap
+      ansible.builtin.shell: swapoff -a
+
+    - name: Install containerd
+      ansible.builtin.unarchive:
+        remote_src: true
+        src: https://github.com/containerd/containerd/releases/download/v1.6.18/containerd-1.6.18-linux-arm64.tar.gz
+        dest: /usr/local
+
+    - name: Register containerd as a service
+      ansible.builtin.shell: |
+        wget https://raw.githubusercontent.com/containerd/containerd/main/containerd.service
+        mkdir -p /usr/local/lib/systemd/system
+        mv containerd.service /usr/local/lib/systemd/system/
+        systemctl daemon-reload
+        systemctl enable --now containerd
+
+    - name: Install runc
+      ansible.builtin.get_url:
+        url: https://github.com/opencontainers/runc/releases/download/v1.1.4/runc.arm64
+        dest: /usr/local/sbin/runc
+        mode: "755"
+
+    - name: Create directory to install CNI plugins
+      ansible.builtin.file:
+        path: /opt/cni/bin
+        state: "directory"
+          
+    - name: Install CNI plugins
+      ansible.builtin.unarchive:
+        remote_src: true
+        src: https://github.com/containernetworking/plugins/releases/download/v1.2.0/cni-plugins-linux-arm64-v1.2.0.tgz
+        dest: /opt/cni/bin
+
+    - name: Create containerd config file
+      ansible.builtin.shell: |
+        mkdir -p /etc/containerd
+        cat /etc/containerd/config.toml > /dev/null \
+        || containerd config default | tee /etc/containerd/config.toml > /dev/null
+
+    - name: Set containerd config file
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: SystemdCgroup = false
+        replace: SystemdCgroup = true
+
+    - name: Set containerd config file
+      ansible.builtin.blockinfile:
+        path: /etc/containerd/config.toml
+        insertafter: "registry.configs]"
+        block: |
+          [plugins."io.containerd.grpc.v1.cri".registry.configs."{{ item.registry }}".tls]
+            insecure_skip_verify = true
+        marker: "# {mark} ANSIBLE MANAGED BLOCK {{ item.registry }}"
+      loop:
+        - { registry: registry.k8s.io }
+        - { registry: quay.io }
+        - { registry: registry.opensource.zalan.do }
+
+    - name: Restart containerd
+      ansible.builtin.shell: |
+        systemctl restart containerd
+
+    - name: install and configure dependencies
+      ansible.builtin.shell: |
+        apt-get update
+        apt-get install -y apt-transport-https ca-certificates curl
+        curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key --keyring /etc/apt/keyrings/kubernetes-archive-keyring.gpg add -
+
+    - name: Create kubernetes repo file
+      ansible.builtin.file:
+        path: "/etc/apt/sources.list.d/kubernetes.list"
+        state: "touch"
+
+    - name: Add kubernetes repo info
+      ansible.builtin.blockinfile:
+        path: "/etc/apt/sources.list.d/kubernetes.list"
+        block: |
+          deb [signed-by=/etc/apt/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main
+
+    - name: Install kubernetes
+      ansible.builtin.shell: |
+        apt-get update
+        apt-get install -y kubelet=1.26.9-00 kubeadm=1.26.9-00 kubectl=1.26.9-00
+        apt-mark hold kubelet kubeadm kubectl

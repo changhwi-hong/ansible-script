@@ -1,0 +1,64 @@
+- hosts: masters
+  become: true
+  tasks:
+    - name: initialize the cluster
+      ansible.builtin.shell: kubeadm init --pod-network-cidr=10.30.0.0/16 >> cluster_initialized.txt
+      args:
+        chdir: $HOME
+        creates: cluster_initialized.txt
+
+    - name: create .kube directory
+      become: false
+      ansible.builtin.file:
+        path: $HOME/.kube
+        state: "directory"
+
+    - name: copies admin.conf to user's kube config
+      become_flags: "-E"
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: $HOME/.kube/config
+        remote_src: yes
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+
+    - name: install tigera operator
+      become: false
+      ansible.builtin.shell: kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.25.0/manifests/tigera-operator.yaml >> tigera_operator_created.txt
+      args:
+        chdir: $HOME
+        creates: tigera_operator_created.txt
+
+    - name: Download the custom resources necessary to configure Calico
+      become: false
+      ansible.builtin.get_url: 
+        url: https://raw.githubusercontent.com/projectcalico/calico/v3.25.0/manifests/custom-resources.yaml
+        dest: $HOME
+
+    - name: change Pod Network CIDR
+      become: false
+      ansible.builtin.replace:
+        path: $HOME/custom-resources.yaml
+        regexp: "192\\.168\\.0\\.0/16"
+        replace: "10.30.0.0/16"
+
+    - name: install Calico
+      become: false
+      ansible.builtin.shell: kubectl create -f custom-resources.yaml >> calico_installed.txt
+      args:
+        chdir: $HOME
+        creates: calico_installed.txt
+
+    - name: Get the token for joining the worker nodes
+      ansible.builtin.shell: kubeadm token create --print-join-command
+      register: kubernetes_join_command
+
+    - ansible.builtin.debug:
+        msg: "{{ kubernetes_join_command.stdout }}"
+
+    - name: Copy join command to local file.
+      become: false
+      ansible.builtin.copy:
+        content: "{{ kubernetes_join_command.stdout_lines[0] }}"
+        dest: /tmp/kubernetes_join_command
+      delegate_to: localhost

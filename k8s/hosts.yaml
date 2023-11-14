@@ -1,0 +1,18 @@
+masters:
+  hosts:
+    master:
+      ansible_host: 192.168.77.133
+      ansible_user: changhwi
+
+workers:
+  hosts:
+    worker1:
+      ansible_host: 192.168.77.134
+      ansible_user: changhwi
+    worker2:
+      ansible_host: 192.168.77.135
+      ansible_user: changhwi
+    worker3:
+      ansible_host: 192.168.77.136
+      ansible_user: changhwi
+
